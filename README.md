@@ -2,17 +2,24 @@
 
 A tiny, runnable example of event-driven architecture. When you place an order, that fact is published as an **event**, and separate services react to it on their own. No service calls another directly. It runs on your laptop with Docker, no cloud.
 
-```text
-        place an order (HTTP)
-you ──────────────────▶ order-service ──"orders.placed"──▶ RabbitMQ ─┐
-                        (publishes, calls no one)                     │
-              ┌───────────────────────────────────────────────────────┼──────────────┐
-              ▼                             ▼                           ▼
-      payment-service              inventory-service              projection-service
-              │                             │                    (keeps an order-status
-     "payments.captured"          "inventory.reserved"            view in Postgres)
-              └──────────────┬──────────────┘                           │
-                             └──────────────────────────────────▶  GET /orders
+```mermaid
+flowchart LR
+    client([client])
+
+    client -->|POST /orders| order[order-service]
+    order -->|publishes orders.placed| mq{{RabbitMQ}}
+
+    mq -->|orders.placed| pay[payment-service]
+    mq -->|orders.placed| inv[inventory-service]
+
+    pay -->|payments.captured| mq
+    inv -->|inventory.reserved| mq
+
+    mq -->|orders.placed + payments.captured + inventory.reserved| proj[projection-service]
+    proj --> pg[(PostgreSQL<br/>order status)]
+    client -->|GET /orders| proj
+
+    mq -.->|failed messages| dlq[[dead-letter queue]]
 ```
 
 ## The idea
