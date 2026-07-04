@@ -5,21 +5,25 @@ A tiny, runnable example of event-driven architecture. When you place an order, 
 ```mermaid
 flowchart LR
     client([client])
+    order[order-service]
+    mq{{RabbitMQ<br/>event broker}}
+    pg[(read model)]
 
-    client -->|POST /orders| order[order-service]
-    order -->|publishes orders.placed| mq{{RabbitMQ}}
+    client -->|place order| order
+    order -->|publishes events| mq
 
-    mq -->|orders.placed| pay[payment-service]
-    mq -->|orders.placed| inv[inventory-service]
+    subgraph consumers [consumers - react independently]
+        pay[payment-service]
+        inv[inventory-service]
+        proj[projection-service]
+    end
 
-    pay -->|payments.captured| mq
-    inv -->|inventory.reserved| mq
-
-    mq -->|orders.placed + payments.captured + inventory.reserved| proj[projection-service]
-    proj --> pg[(PostgreSQL<br/>order status)]
-    client -->|GET /orders| proj
-
-    mq -.->|failed messages| dlq[[dead-letter queue]]
+    mq -->|fan-out| pay
+    mq -->|fan-out| inv
+    mq -->|fan-out| proj
+    proj --> pg
+    client -.->|read status| proj
+    mq -.->|all events| ui[dashboard UI]
 ```
 
 ## The idea
@@ -37,6 +41,7 @@ That last point - services staying independent - is the whole reason to go event
 - **[payment-service](payment_service.py)** - reacts, publishes `payments.captured`.
 - **[inventory-service](inventory_service.py)** - reacts, publishes `inventory.reserved`.
 - **[projection-service](projection_service.py)** - listens to all three and keeps an order-status view in Postgres, served over HTTP.
+- **[dashboard](dashboard.py)** - a live web view of the whole system, subscribing to every event.
 
 ## Run it
 
@@ -49,7 +54,8 @@ make logs    # watch the events flow between services
 make down    # stop everything
 ```
 
-- See the result: <http://localhost:8001/orders>
+- **Live dashboard: <http://localhost:8002>** - place orders and watch the components light up as events flow
+- See the read model: <http://localhost:8001/orders>
 - Watch the broker (queues, messages): <http://localhost:15672> (guest / guest)
 
 ## Core concepts

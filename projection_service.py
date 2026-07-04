@@ -13,6 +13,7 @@ from contextlib import asynccontextmanager
 
 import asyncpg
 from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 
 import bus
 from projection_logic import apply_event
@@ -66,6 +67,9 @@ async def lifespan(app):
 
 
 app = FastAPI(title="projection-service", lifespan=lifespan)
+
+# Let the browser dashboard (a different port) read the order status.
+app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 
 @app.get("/orders/{order_id}")

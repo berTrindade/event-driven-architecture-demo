@@ -13,6 +13,7 @@ import uuid
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 import bus
@@ -26,6 +27,9 @@ async def lifespan(app):
 
 
 app = FastAPI(title="order-service", lifespan=lifespan)
+
+# Let the browser dashboard (a different port) place test orders.
+app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 
 class NewOrder(BaseModel):

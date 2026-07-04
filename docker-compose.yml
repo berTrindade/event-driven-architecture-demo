@@ -1,5 +1,5 @@
-# Event-driven architecture demo: RabbitMQ + Postgres + 4 tiny services. Laptop, no cloud.
-# `make up` builds and starts everything; `make demo` drives it end to end.
+# Event-driven architecture demo: RabbitMQ + Postgres + services + a live dashboard.
+# Runs on a laptop, no cloud. `make up` builds and starts everything.
 
 x-app-env: &app-env
   RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/
@@ -74,3 +74,11 @@ services:
       <<: *app-depends
       postgres:
         condition: service_healthy
+
+  dashboard:
+    build: .
+    command: uvicorn dashboard:app --host 0.0.0.0 --port 8002
+    ports:
+      - "8002:8002"
+    environment: *app-env
+    depends_on: *app-depends
