@@ -1,42 +1,17 @@
-# Event-driven order-processing demo.
-# Whole stack runs on a laptop: NATS + Postgres + small Python services.
+# Event-driven architecture demo: NATS + 4 tiny services. Runs on a laptop.
 # `make up` builds and starts everything; `make demo` drives it end to end.
 
-# Shared env for every app service (anchor reused via <<: *app-env).
 x-app-env: &app-env
   NATS_URL: nats://nats:4222
-  DATABASE_URL: postgresql://demo:demo@postgres:5432/demo
-
-x-app-depends: &app-depends
-  nats:
-    condition: service_started
-  postgres:
-    condition: service_healthy
 
 services:
   nats:
     image: nats:2.10
-    # Core NATS only (no -js): ephemeral messaging - see README "Teaching caveats".
+    # Core NATS only (no -js): ephemeral messaging - see README "Making it production-grade".
     command: ["-m", "8222"]
     ports:
       - "4222:4222" # client connections
       - "8222:8222" # http monitoring (http://localhost:8222)
-
-  postgres:
-    image: postgres:16
-    environment:
-      POSTGRES_USER: demo
-      POSTGRES_PASSWORD: demo
-      POSTGRES_DB: demo
-    volumes:
-      - ./db/schema.sql:/docker-entrypoint-initdb.d/schema.sql:ro
-    ports:
-      - "5432:5432"
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U demo -d demo"]
-      interval: 2s
-      timeout: 3s
-      retries: 15
 
   order-service:
     build: .
@@ -44,31 +19,19 @@ services:
     ports:
       - "8000:8000"
     environment: *app-env
-    depends_on: *app-depends
-
-  outbox-relay:
-    build: .
-    command: python -m services.outbox_relay
-    environment: *app-env
-    depends_on: *app-depends
+    depends_on: [nats]
 
   payment-service:
     build: .
     command: python -m services.payment_service
     environment: *app-env
-    depends_on: *app-depends
+    depends_on: [nats]
 
   inventory-service:
     build: .
     command: python -m services.inventory_service
     environment: *app-env
-    depends_on: *app-depends
-
-  notification-service:
-    build: .
-    command: python -m services.notification_service
-    environment: *app-env
-    depends_on: *app-depends
+    depends_on: [nats]
 
   projection-service:
     build: .
@@ -76,4 +39,4 @@ services:
     ports:
       - "8001:8001"
     environment: *app-env
-    depends_on: *app-depends
+    depends_on: [nats]

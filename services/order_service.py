@@ -1,20 +1,20 @@
-"""order-service - the command side (write model).
+"""order-service - the entry point.
 
-PATTERN 2: transactional outbox.
-Placing an order writes the `orders` row AND an `outbox` row in ONE Postgres
-transaction. This service never touches NATS - that is the whole point. If the
-process dies right after commit, the event is still safely in the outbox and
-outbox_relay.py will publish it. If the transaction rolls back, neither the
-order nor the event exists. No dual-write, no lost events.
+It publishes one fact, `orders.placed`, and calls no one. It doesn't know that
+payment, inventory, or the projection exist. That decoupling is the whole idea:
+add or remove a consumer without ever touching this service.
+
+Run: uvicorn services.order_service:app --host 0.0.0.0 --port 8000
 """
 
-import json
 import uuid
 
 from fastapi import FastAPI
 from pydantic import BaseModel
 
-from .common import get_pool
+from eventbus import EventPayload
+
+from .common import get_bus
 
 app = FastAPI(title="order-service")
 
@@ -27,38 +27,21 @@ class NewOrder(BaseModel):
 
 @app.post("/orders", status_code=201)
 async def place_order(order: NewOrder):
-    order_id = uuid.uuid4()
-    payload = {
-        "topic": "orders.placed",
-        "eventId": str(order_id),
-        "data": {
-            "order_id": str(order_id),
-            "customer": order.customer,
-            "item": order.item,
-            "amount_cents": order.amount_cents,
-        },
-    }
-
-    pool = await get_pool()
-    async with pool.acquire() as conn:
-        # One transaction: the order and its outbox row commit together or not
-        # at all. This is the transactional-outbox guarantee.
-        async with conn.transaction():
-            await conn.execute(
-                "INSERT INTO orders (id, customer, item, amount_cents) VALUES ($1, $2, $3, $4)",
-                order_id,
-                order.customer,
-                order.item,
-                order.amount_cents,
-            )
-            await conn.execute(
-                "INSERT INTO outbox (topic, payload) VALUES ($1, $2)",
-                "orders.placed",
-                # asyncpg needs an explicit JSON encode for a jsonb column.
-                json.dumps(payload),
-            )
-
-    return {"order_id": str(order_id)}
+    order_id = str(uuid.uuid4())
+    bus = await get_bus("order-service")
+    await bus.send(
+        EventPayload(
+            topic="orders.placed",
+            eventId=order_id,
+            data={
+                "order_id": order_id,
+                "customer": order.customer,
+                "item": order.item,
+                "amount_cents": order.amount_cents,
+            },
+        )
+    )
+    return {"order_id": order_id}
 
 
 @app.get("/health")

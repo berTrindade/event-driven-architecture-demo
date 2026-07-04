@@ -1,7 +1,8 @@
-"""PATTERN 5: read-model / projection logic (CQRS-lite).
+"""Read-model / projection logic (CQRS-lite).
 
-Pure functions only - no DB, no NATS - so the folding rules can be unit-tested
-offline (see tests/test_logic.py). projection_service.py wires this to Postgres.
+Pure functions only - no store, no NATS - so the folding rules can be
+unit-tested offline (see tests/test_logic.py). projection_service.py wires this
+to the in-memory read model.
 
 The read model is built by folding independent events onto an order's status.
 Because the folding is commutative for payment/inventory, the order the events

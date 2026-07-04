@@ -1,72 +1,75 @@
 # Event-driven architecture - reference demo
 
-A runnable, laptop-sized example of a **proper** event-driven architecture, built to demo the patterns people usually get wrong. One order event fans out to independent services over NATS, backed by Postgres. No cloud account needed.
+A runnable, laptop-sized example of a **proper** event-driven architecture. One order event fans out to independent services over NATS. The whole thing is NATS plus four tiny Python services - no database, no cloud account.
 
 ```text
-                      ┌──────────────┐   HTTP POST /orders
-                      │ order-service│◀────────────────────── you
-                      └──────┬───────┘
-              one DB tx:     │ orders + outbox row        (PATTERN 2: outbox)
-                      ┌──────▼───────┐
-                      │   Postgres   │
-                      └──────┬───────┘
-              polls unpublished rows
-                      ┌──────▼───────┐
-                      │ outbox-relay │──publish──▶ NATS ─┐
-                      └──────────────┘                    │
-                                                          │  event.orders.placed
-                     ┌────────────────────────────────────┼───────────────────┐
-                     ▼                                     ▼                    ▼
-             ┌───────────────┐                   ┌─────────────────┐   ┌───────────────┐
-             │payment-service│                   │inventory-service│   │  projection   │
-             └───────┬───────┘                   └────────┬────────┘   │ (read model)  │
-        payments.captured                     inventory.reserved       └───────┬───────┘
-                     └──▶ notification-service          │                       │ GET /orders/{id}
-                                                        └───────────────────────▶  order_status
+        HTTP POST /orders
+you ───────────────────▶ order-service ──publish orders.placed──▶ NATS ─┐
+                         (calls no one)                                  │
+              ┌──────────────────────────────────────────────────────────┼──────────────┐
+              ▼                             ▼                              ▼
+      payment-service              inventory-service                  projection
+              │                             │                        (read model)
+     payments.captured            inventory.reserved                      │  GET /orders/{id}
+              └──────────────┬──────────────┘                             ▼
+                             └────────────────────────────────────▶  order status
 ```
 
-## The 5 patterns (and where to look)
+## The idea
 
-| # | Pattern | Where | Why it matters |
-|---|---------|-------|----------------|
-| 1 | **Choreography** | [payment_service.py](services/payment_service.py), [inventory_service.py](services/inventory_service.py) | Services react on their own and emit their own events. No orchestrator to become a bottleneck or single point of change. |
-| 2 | **Transactional outbox** | [order_service.py](services/order_service.py) + [outbox_relay.py](services/outbox_relay.py) | The order row and the event commit in one DB transaction, so you never lose an event or publish one for an order that rolled back. The relay turns committed rows into events. |
-| 3 | **Idempotent consumers** | `mark_processed` in [common.py](services/common.py) | Delivery is at-least-once. Dedupe by `eventId` so a redelivered event isn't charged twice. |
-| 4 | **Retries + dead-letter** | `process_with_dlq` in [common.py](services/common.py) | A failing event is retried, then parked in `dead_letters` and announced on `dead-letter.<topic>` - visible and replayable, not silently dropped. |
-| 5 | **Read model / projection** | [projection_logic.py](services/projection_logic.py) + [projection_service.py](services/projection_service.py) | Events are the source of truth. The query side folds them into a queryable `order_status` view (CQRS-lite), fully separate from the write side. |
+That's the whole lesson, and it's the part people get wrong:
+
+- **Events are facts, in the past tense** - `orders.placed`, not "create order".
+- **The producer doesn't know its consumers** - order-service publishes to a topic and calls no one. Add or remove a consumer without touching it.
+- **Consumers react independently and asynchronously** - payment and inventory both handle the same event, with no orchestrator between them.
+
+The projection then folds those events into a queryable order status, which shows the other half of the idea: **events are the source of truth**, and read models are derived from them.
+
+## The four services
+
+| Service | Does | Demonstrates |
+| --- | --- | --- |
+| [order-service](services/order_service.py) | `POST /orders` → publishes `orders.placed` | producer that knows no consumers |
+| [payment-service](services/payment_service.py) | reacts → publishes `payments.captured` | choreography |
+| [inventory-service](services/inventory_service.py) | reacts → publishes `inventory.reserved` | independent fan-out |
+| [projection-service](services/projection_service.py) | folds all three → `order status` view | read model / CQRS-lite |
+
+The folding rules are pure and unit-tested: [projection_logic.py](services/projection_logic.py).
 
 ## Run it
 
 Needs Docker.
 
 ```bash
-make up      # build + start NATS, Postgres, and all services
-make demo    # place an order, watch it reach CONFIRMED, then trigger a dead-letter
+make up      # build + start NATS and the four services
+make demo    # place an order, watch it reach CONFIRMED
 make logs    # follow every service as events flow
-make down    # stop and wipe volumes
+make down    # stop everything
 ```
 
 Read model in the browser: <http://localhost:8001/orders>. NATS monitoring: <http://localhost:8222>.
 
 ## What to show your audience
 
-1. `make demo` places a normal order. Tail `make logs` and point out the cascade: order-service commits, outbox-relay publishes, payment and inventory react **independently**, projection folds all three into `CONFIRMED`.
-2. Show the outbox: the order-service code never imports NATS. It only writes a DB row. Reliability comes from the relay, not from a fragile "write DB then publish" dual write.
-3. Trigger the poison order (`item: "POISON"`). It retries, dead-letters, and never confirms. Show the `dead_letters` table.
-4. Point at `order_status`: it's derived purely from events, so you could rebuild it by replaying them.
+1. `make demo` places one order. In `make logs`, point out that payment and inventory both wake up from the **same** event, independently, and the projection reaches `CONFIRMED` once both have reacted.
+2. Open [order_service.py](services/order_service.py): it imports no other service and calls no one. It only publishes a fact. That's the decoupling.
+3. Kill inventory-service, place another order, and note payment still runs and the projection stays partial. Restart it and the flow completes for new orders. Consumers are independent.
 
-## Teaching caveats (say these out loud)
+## Making it production-grade
 
-- **Core NATS is ephemeral.** If a consumer is down when an event fires, it misses it. That keeps the demo simple, but for real durability use **NATS JetStream** or **AWS EventBridge + SQS**. The patterns above don't change.
-- **The outbox guarantees publish, not end-to-end delivery.** Pair it with a durable broker for the full guarantee.
-- **Idempotency here marks-then-works** (at-most-once per consumer). If you need at-least-once processing, mark only after the work succeeds and make the work itself idempotent.
+This demo keeps to the core idea on purpose. A real system layers on concerns that each deserve their own explanation:
+
+- **Durable transport** - Core NATS is ephemeral, so a consumer that's down misses events. Use **NATS JetStream** or **AWS EventBridge + SQS** for persistence and redelivery.
+- **Transactional outbox** - if the producer also writes its own database, commit the row and the event together so you never lose or orphan an event.
+- **Idempotent consumers** - with at-least-once delivery, dedupe by event id so a redelivered event isn't processed twice.
+- **Retries + dead-letter** - retry a failing event, then park it somewhere visible instead of dropping it.
+- **Durable read model** - swap the in-memory dict for a database you can rebuild by replaying events.
 
 ## Layout
 
 ```text
 eventbus/        reusable Core NATS client (pub/sub + request-response)
-services/        order, outbox-relay, payment, inventory, notification, projection
-db/schema.sql    orders, outbox, processed_events, order_status, dead_letters
+services/        order, payment, inventory, projection + the pure projection reducer
 tests/           offline self-checks (no broker needed)
 docker-compose.yml / Dockerfile / Makefile / scripts/demo.sh
 ```
