@@ -1,55 +1,64 @@
-"""A tiny event bus over Kafka (via aiokafka): one producer, per-service consumers.
+"""A tiny event bus over RabbitMQ (via aio-pika): a topic exchange, a queue per service.
 
-Kafka is the usual default for event-driven systems - durable, replayable, with
-consumer groups for scaling. An event is just JSON on a topic named event.<name>.
-A real setup adds schemas, partitioning keys, and tuning (see the README's
-"Making it production-grade"); here we stay readable.
+RabbitMQ is the classic message-broker backbone. Producers publish to a topic
+exchange with a routing key; each service binds its own durable queue, so every
+service gets its own copy of the events it cares about (fan-out). An event is
+just JSON. See the README's "Making it production-grade" for the hardening knobs.
 """
 
 import json
 import os
 
-from aiokafka import AIOKafkaConsumer, AIOKafkaProducer
+import aio_pika
 
-BOOTSTRAP = os.getenv("KAFKA_BOOTSTRAP", "localhost:9092")
+RABBITMQ_URL = os.getenv("RABBITMQ_URL", "amqp://guest:guest@localhost:5672/")
+EXCHANGE_NAME = "events"
 
-_producer = None  # one Kafka producer per process
+_connection = None
+_channel = None
+_exchange = None
 
 
 async def start(name: str) -> None:
-    """Open this process's Kafka producer. Call once before publishing."""
-    global _producer
-    _producer = AIOKafkaProducer(bootstrap_servers=BOOTSTRAP, client_id=name)
-    await _producer.start()
+    """Connect, open a channel, and declare the shared topic exchange."""
+    global _connection, _channel, _exchange
+    _connection = await aio_pika.connect_robust(
+        RABBITMQ_URL, client_properties={"connection_name": name}
+    )
+    _channel = await _connection.channel()
+    _exchange = await _channel.declare_exchange(
+        EXCHANGE_NAME, aio_pika.ExchangeType.TOPIC, durable=True
+    )
 
 
 async def stop() -> None:
-    if _producer is not None:
-        await _producer.stop()
+    if _connection is not None:
+        await _connection.close()
 
 
 async def publish(topic: str, data: dict) -> None:
-    """Emit an event. The publisher doesn't know or care who consumes it."""
+    """Emit an event. The publisher routes by topic and knows no consumers."""
     event = {"topic": topic, "data": data}
-    await _producer.send_and_wait(f"event.{topic}", json.dumps(event).encode())
-
-
-async def consume(topic: str, group: str, handler) -> None:
-    """Run forever: call handler(data) for each event on `topic`.
-
-    `group` is the Kafka consumer group. A distinct group per service means every
-    service sees every event (fan-out). Sharing one group would load-balance instead.
-    """
-    consumer = AIOKafkaConsumer(
-        f"event.{topic}",
-        bootstrap_servers=BOOTSTRAP,
-        group_id=group,
-        auto_offset_reset="earliest",
+    message = aio_pika.Message(
+        body=json.dumps(event).encode(),
+        delivery_mode=aio_pika.DeliveryMode.PERSISTENT,
     )
-    await consumer.start()
-    try:
-        async for message in consumer:
-            event = json.loads(message.value.decode())
-            await handler(event["data"])
-    finally:
-        await consumer.stop()
+    await _exchange.publish(message, routing_key=topic)
+
+
+async def consume(queue_name: str, topics: list, handler) -> None:
+    """Bind a durable queue to `topics` and call handler(topic, data) per message.
+
+    A distinct queue per service means each service gets its own copy of every
+    matching event (fan-out). Sharing one queue would load-balance instead.
+    """
+    queue = await _channel.declare_queue(queue_name, durable=True)
+    for topic in topics:
+        await queue.bind(EXCHANGE_NAME, routing_key=topic)
+
+    async def on_message(message):
+        async with message.process():
+            event = json.loads(message.body.decode())
+            await handler(message.routing_key, event["data"])
+
+    await queue.consume(on_message)

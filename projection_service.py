@@ -1,8 +1,8 @@
 """projection-service - the read model (CQRS-lite).
 
-Consumes the three events and folds each into a per-order status using the pure
-apply_event() rules, then serves that view over HTTP. It only reads events and
-builds state - it issues no commands.
+Consumes the three events (one queue bound to all three routing keys) and folds
+each into a per-order status using the pure apply_event() rules, then serves
+that view over HTTP. It only reads events and builds state - it issues no commands.
 
 The store is an in-memory dict to keep the demo to one moving part. In
 production it's a real database you could rebuild by replaying the events.
@@ -10,7 +10,6 @@ production it's a real database you could rebuild by replaying the events.
 Run: uvicorn projection_service:app --host 0.0.0.0 --port 8001
 """
 
-import asyncio
 import logging
 from contextlib import asynccontextmanager
 
@@ -28,26 +27,19 @@ TOPICS = ["orders.placed", "payments.captured", "inventory.reserved"]
 orders = {}
 
 
-def make_handler(topic):
-    async def handler(data):
-        order_id = data["order_id"]
-        orders[order_id] = {**apply_event(orders.get(order_id, {}), topic), "order_id": order_id}
-        log.info("%s -> order %s is %s", topic, order_id, orders[order_id].get("status"))
-
-    return handler
+async def on_event(topic, data):
+    order_id = data["order_id"]
+    orders[order_id] = {**apply_event(orders.get(order_id, {}), topic), "order_id": order_id}
+    log.info("%s -> order %s is %s", topic, order_id, orders[order_id].get("status"))
 
 
 @asynccontextmanager
 async def lifespan(app):
-    # one consumer per topic, each running in the background
-    tasks = [
-        asyncio.create_task(bus.consume(topic, "projection-service", make_handler(topic)))
-        for topic in TOPICS
-    ]
+    await bus.start("projection-service")
+    await bus.consume("projection-service", TOPICS, on_event)
     log.info("projecting %s", TOPICS)
     yield
-    for task in tasks:
-        task.cancel()
+    await bus.stop()
 
 
 app = FastAPI(title="projection-service", lifespan=lifespan)

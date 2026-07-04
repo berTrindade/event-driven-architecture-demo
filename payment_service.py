@@ -15,7 +15,7 @@ logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("payment-service")
 
 
-async def on_order_placed(data):
+async def on_event(topic, data):
     log.info("charging order %s", data["order_id"])
     await bus.publish(
         "payments.captured",
@@ -25,8 +25,9 @@ async def on_order_placed(data):
 
 async def main():
     await bus.start("payment-service")
+    await bus.consume("payment-service", ["orders.placed"], on_event)
     log.info("listening for orders.placed")
-    await bus.consume("orders.placed", "payment-service", on_order_placed)
+    await asyncio.Event().wait()
 
 
 if __name__ == "__main__":
