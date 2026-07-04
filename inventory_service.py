@@ -24,10 +24,9 @@ async def on_order_placed(data):
 
 
 async def main():
-    await bus.connect("inventory-service")
-    await bus.subscribe("orders.placed", on_order_placed)
+    await bus.start("inventory-service")
     log.info("listening for orders.placed")
-    await asyncio.Event().wait()
+    await bus.consume("orders.placed", "inventory-service", on_order_placed)
 
 
 if __name__ == "__main__":

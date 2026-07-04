@@ -17,8 +17,9 @@ import bus
 
 @asynccontextmanager
 async def lifespan(app):
-    await bus.connect("order-service")
+    await bus.start("order-service")
     yield
+    await bus.stop()
 
 
 app = FastAPI(title="order-service", lifespan=lifespan)

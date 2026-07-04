@@ -1,37 +1,55 @@
-"""A tiny event bus over NATS: connect, publish, subscribe. That's all the demo needs.
+"""A tiny event bus over Kafka (via aiokafka): one producer, per-service consumers.
 
-An event on the wire is just JSON on a subject named `event.<topic>`. A real
-system would add reconnection, an event id and timestamp, tracing, and delivery
-guarantees (see the README's "Making it production-grade"). Here we stay readable.
+Kafka is the usual default for event-driven systems - durable, replayable, with
+consumer groups for scaling. An event is just JSON on a topic named event.<name>.
+A real setup adds schemas, partitioning keys, and tuning (see the README's
+"Making it production-grade"); here we stay readable.
 """
 
 import json
 import os
 
-import nats
+from aiokafka import AIOKafkaConsumer, AIOKafkaProducer
 
-NATS_URL = os.getenv("NATS_URL", "nats://localhost:4222")
+BOOTSTRAP = os.getenv("KAFKA_BOOTSTRAP", "localhost:9092")
 
-_nc = None  # one NATS connection per process
+_producer = None  # one Kafka producer per process
 
 
-async def connect(name: str) -> None:
-    """Open this process's connection to NATS. `name` shows up in NATS monitoring."""
-    global _nc
-    _nc = await nats.connect(NATS_URL, name=name)
+async def start(name: str) -> None:
+    """Open this process's Kafka producer. Call once before publishing."""
+    global _producer
+    _producer = AIOKafkaProducer(bootstrap_servers=BOOTSTRAP, client_id=name)
+    await _producer.start()
+
+
+async def stop() -> None:
+    if _producer is not None:
+        await _producer.stop()
 
 
 async def publish(topic: str, data: dict) -> None:
-    """Emit an event. The publisher doesn't know or care who is listening."""
+    """Emit an event. The publisher doesn't know or care who consumes it."""
     event = {"topic": topic, "data": data}
-    await _nc.publish(f"event.{topic}", json.dumps(event).encode())
+    await _producer.send_and_wait(f"event.{topic}", json.dumps(event).encode())
 
 
-async def subscribe(topic: str, handler) -> None:
-    """Call handler(data) for every event published on `topic`."""
+async def consume(topic: str, group: str, handler) -> None:
+    """Run forever: call handler(data) for each event on `topic`.
 
-    async def on_message(msg):
-        event = json.loads(msg.data.decode())
-        await handler(event["data"])
-
-    await _nc.subscribe(f"event.{topic}", cb=on_message)
+    `group` is the Kafka consumer group. A distinct group per service means every
+    service sees every event (fan-out). Sharing one group would load-balance instead.
+    """
+    consumer = AIOKafkaConsumer(
+        f"event.{topic}",
+        bootstrap_servers=BOOTSTRAP,
+        group_id=group,
+        auto_offset_reset="earliest",
+    )
+    await consumer.start()
+    try:
+        async for message in consumer:
+            event = json.loads(message.value.decode())
+            await handler(event["data"])
+    finally:
+        await consumer.stop()

@@ -1,7 +1,7 @@
 """payment-service - reacts to orders.placed, then emits its own fact.
 
-Nothing tells it to run. It subscribes to orders.placed, does its bit, and
-publishes payments.captured. That is choreography.
+Nothing tells it to run. It consumes orders.placed, does its bit, and publishes
+payments.captured. That is choreography.
 
 Run: python payment_service.py
 """
@@ -24,10 +24,9 @@ async def on_order_placed(data):
 
 
 async def main():
-    await bus.connect("payment-service")
-    await bus.subscribe("orders.placed", on_order_placed)
+    await bus.start("payment-service")
     log.info("listening for orders.placed")
-    await asyncio.Event().wait()
+    await bus.consume("orders.placed", "payment-service", on_order_placed)
 
 
 if __name__ == "__main__":

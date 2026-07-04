@@ -1,8 +1,8 @@
 """projection-service - the read model (CQRS-lite).
 
-Subscribes to the three events and folds each into a per-order status using the
-pure apply_event() rules, then serves that view over HTTP. It only reads events
-and builds state - it issues no commands.
+Consumes the three events and folds each into a per-order status using the pure
+apply_event() rules, then serves that view over HTTP. It only reads events and
+builds state - it issues no commands.
 
 The store is an in-memory dict to keep the demo to one moving part. In
 production it's a real database you could rebuild by replaying the events.
@@ -10,6 +10,7 @@ production it's a real database you could rebuild by replaying the events.
 Run: uvicorn projection_service:app --host 0.0.0.0 --port 8001
 """
 
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 
@@ -38,11 +39,15 @@ def make_handler(topic):
 
 @asynccontextmanager
 async def lifespan(app):
-    await bus.connect("projection-service")
-    for topic in TOPICS:
-        await bus.subscribe(topic, make_handler(topic))
+    # one consumer per topic, each running in the background
+    tasks = [
+        asyncio.create_task(bus.consume(topic, "projection-service", make_handler(topic)))
+        for topic in TOPICS
+    ]
     log.info("projecting %s", TOPICS)
     yield
+    for task in tasks:
+        task.cancel()
 
 
 app = FastAPI(title="projection-service", lifespan=lifespan)
