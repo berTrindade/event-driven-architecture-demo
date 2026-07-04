@@ -1,18 +1,20 @@
-"""projection-service - the read model (CQRS-lite).
+"""projection-service - the read model (CQRS-lite), stored in PostgreSQL.
 
 Consumes the three events (one queue bound to all three routing keys) and folds
-each into a per-order status using the pure apply_event() rules, then serves
+each into the order_status table using the pure apply_event() rules, then serves
 that view over HTTP. It only reads events and builds state - it issues no commands.
 
-The store is an in-memory dict to keep the demo to one moving part. In
-production it's a real database you could rebuild by replaying the events.
+Postgres is the classic default store for a read model, and it's durable: you
+could rebuild this table by replaying the events (given a durable log upstream).
 
 Run: uvicorn projection_service:app --host 0.0.0.0 --port 8001
 """
 
 import logging
+import os
 from contextlib import asynccontextmanager
 
+import asyncpg
 from fastapi import FastAPI, HTTPException
 
 import bus
@@ -21,25 +23,51 @@ from projection_logic import apply_event
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("projection-service")
 
+DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://demo:demo@localhost:5432/demo")
 TOPICS = ["orders.placed", "payments.captured", "inventory.reserved"]
 
-# order_id -> status view, built purely from events.
-orders = {}
+pool = None
 
 
 async def on_event(topic, data):
     order_id = data["order_id"]
-    orders[order_id] = {**apply_event(orders.get(order_id, {}), topic), "order_id": order_id}
-    log.info("%s -> order %s is %s", topic, order_id, orders[order_id].get("status"))
+    # Read-modify-write in one transaction with a row lock, so two events for the
+    # same order (payment and inventory) can't clobber each other.
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            row = await conn.fetchrow(
+                "SELECT status, payment, inventory FROM order_status WHERE order_id = $1 FOR UPDATE",
+                order_id,
+            )
+            new_state = apply_event(dict(row) if row else {}, topic)
+            await conn.execute(
+                """
+                INSERT INTO order_status (order_id, status, payment, inventory, updated_at)
+                VALUES ($1, $2, $3, $4, now())
+                ON CONFLICT (order_id) DO UPDATE
+                SET status = EXCLUDED.status,
+                    payment = EXCLUDED.payment,
+                    inventory = EXCLUDED.inventory,
+                    updated_at = now()
+                """,
+                order_id,
+                new_state.get("status"),
+                new_state.get("payment"),
+                new_state.get("inventory"),
+            )
+    log.info("%s -> order %s is %s", topic, order_id, new_state.get("status"))
 
 
 @asynccontextmanager
 async def lifespan(app):
+    global pool
+    pool = await asyncpg.create_pool(DATABASE_URL, min_size=1, max_size=5)
     await bus.start("projection-service")
     await bus.consume("projection-service", TOPICS, on_event)
     log.info("projecting %s", TOPICS)
     yield
     await bus.stop()
+    await pool.close()
 
 
 app = FastAPI(title="projection-service", lifespan=lifespan)
@@ -47,14 +75,21 @@ app = FastAPI(title="projection-service", lifespan=lifespan)
 
 @app.get("/orders/{order_id}")
 async def get_order(order_id: str):
-    if order_id not in orders:
+    row = await pool.fetchrow(
+        "SELECT order_id, status, payment, inventory, updated_at FROM order_status WHERE order_id = $1",
+        order_id,
+    )
+    if row is None:
         raise HTTPException(status_code=404, detail="order not in read model yet")
-    return orders[order_id]
+    return dict(row)
 
 
 @app.get("/orders")
 async def list_orders():
-    return list(orders.values())
+    rows = await pool.fetch(
+        "SELECT order_id, status, payment, inventory, updated_at FROM order_status ORDER BY updated_at DESC"
+    )
+    return [dict(row) for row in rows]
 
 
 @app.get("/health")

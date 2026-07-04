@@ -1,6 +1,6 @@
 # Event-driven architecture - reference demo
 
-A runnable, laptop-sized example of a **proper** event-driven architecture, small enough to read top to bottom. One order event fans out to independent services over **RabbitMQ** - the classic message-broker backbone. The whole thing is RabbitMQ plus four tiny Python services, self-hosted, **no cloud account**.
+A runnable, laptop-sized example of a **proper** event-driven architecture, small enough to read top to bottom. One order event fans out to independent services over **RabbitMQ** - the classic message-broker backbone. The whole thing is RabbitMQ, a PostgreSQL read model, and four tiny Python services, self-hosted, **no cloud account**.
 
 ```text
         HTTP POST /orders
@@ -48,7 +48,7 @@ RabbitMQ is the classic, battle-tested message broker. A **topic exchange** rout
 - **Events are facts, past tense** - `orders.placed`, not "create order".
 - **The producer knows no consumers** - [order_service.py](order_service.py) publishes to the exchange and imports none of the other services. Add or remove a consumer without touching it.
 - **Consumers react independently** - payment and inventory each bind their **own queue** to `orders.placed`, so both receive every event (fan-out). Share one queue and RabbitMQ load-balances instead (competing consumers).
-- **The read model is derived** - the projection folds events into a queryable status.
+- **The read model is derived** - the projection folds events into a queryable Postgres table you could rebuild by replaying them.
 
 The bus is deliberately tiny: [bus.py](bus.py) wraps `aio-pika` into `start` / `publish` / `consume`. An event on the wire is just `{"topic": ..., "data": ...}`, published to the `events` topic exchange with the topic as the routing key.
 
@@ -59,7 +59,7 @@ The bus is deliberately tiny: [bus.py](bus.py) wraps `aio-pika` into `start` / `
 | [order_service.py](order_service.py) | `POST /orders` → publishes `orders.placed` | producer that knows no consumers |
 | [payment_service.py](payment_service.py) | reacts → publishes `payments.captured` | choreography |
 | [inventory_service.py](inventory_service.py) | reacts → publishes `inventory.reserved` | independent fan-out |
-| [projection_service.py](projection_service.py) | folds all three → order status view | read model / CQRS-lite |
+| [projection_service.py](projection_service.py) | folds all three → `order_status` table (Postgres) | read model / CQRS-lite |
 
 Folding rules are pure and unit-tested: [projection_logic.py](projection_logic.py).
 
@@ -91,7 +91,7 @@ This demo keeps to the core on purpose. A real system layers on concerns that ea
 - **Idempotent consumers** - delivery is at-least-once, so dedupe by event id to avoid double-processing on redelivery.
 - **Schemas** - wrap events in **CloudEvents** and enforce a schema so producers and consumers evolve independently.
 - **High availability** - use **quorum queues** across a RabbitMQ cluster.
-- **Durable read model + observability** - swap the in-memory dict for a real database, and add OpenTelemetry trace context across events.
+- **Observability** - add OpenTelemetry trace context across events so a single order's journey is traceable across the services.
 
 ## Layout
 
@@ -100,8 +100,9 @@ bus.py                 tiny RabbitMQ event bus (aio-pika): start / publish / con
 order_service.py       publishes orders.placed
 payment_service.py     reacts, publishes payments.captured
 inventory_service.py   reacts, publishes inventory.reserved
-projection_service.py  builds the read model, serves it over HTTP
+projection_service.py  builds the read model in Postgres, serves it over HTTP
 projection_logic.py    pure folding rules (unit-tested)
+db/schema.sql          the read-model table (order_status)
 test_logic.py          offline self-check (no broker needed)
 docker-compose.yml / Dockerfile / Makefile / scripts/demo.sh
 ```

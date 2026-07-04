@@ -1,4 +1,4 @@
-# Event-driven architecture demo: RabbitMQ + 4 tiny services. Runs on a laptop, no cloud.
+# Event-driven architecture demo: RabbitMQ + Postgres + 4 tiny services. Laptop, no cloud.
 # `make up` builds and starts everything; `make demo` drives it end to end.
 
 x-app-env: &app-env
@@ -20,6 +20,22 @@ services:
       timeout: 10s
       retries: 20
       start_period: 10s
+
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: demo
+      POSTGRES_PASSWORD: demo
+      POSTGRES_DB: demo
+    volumes:
+      - ./db/schema.sql:/docker-entrypoint-initdb.d/schema.sql:ro
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U demo -d demo"]
+      interval: 3s
+      timeout: 5s
+      retries: 20
 
   order-service:
     build: .
@@ -46,5 +62,10 @@ services:
     command: uvicorn projection_service:app --host 0.0.0.0 --port 8001
     ports:
       - "8001:8001"
-    environment: *app-env
-    depends_on: *app-depends
+    environment:
+      <<: *app-env
+      DATABASE_URL: postgresql://demo:demo@postgres:5432/demo
+    depends_on:
+      <<: *app-depends
+      postgres:
+        condition: service_healthy
