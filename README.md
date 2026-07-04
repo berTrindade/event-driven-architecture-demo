@@ -17,13 +17,21 @@ you ───────────────────▶ order-service �
 
 ## The idea
 
-That's the whole lesson, and it's the part people get wrong:
+Event-driven means components communicate by **producing and reacting to events** - facts about a state change - through a router, instead of calling each other directly. Three roles: **producers** emit events, a **router/broker** (NATS here) delivers them, **consumers** react. That's the whole lesson, and it's the part people get wrong:
 
 - **Events are facts, in the past tense** - `orders.placed`, not "create order".
 - **The producer doesn't know its consumers** - order-service publishes to a topic and calls no one. Add or remove a consumer without touching it.
 - **Consumers react independently and asynchronously** - payment and inventory both handle the same event, with no orchestrator between them.
 
-The projection then folds those events into a queryable order status, which shows the other half of the idea: **events are the source of truth**, and read models are derived from them.
+The projection then folds those events into a queryable order status, which shows the other half of the idea: read models are **derived** from events.
+
+### Where this sits in the "event-driven" landscape
+
+Martin Fowler's [*What do you mean by "Event-Driven"?*](https://martinfowler.com/articles/201701-event-driven.html) warns the term is overloaded across four patterns people conflate. To be precise about what this demo is (and isn't):
+
+- **Event notification + event-carried state transfer** - `orders.placed` both signals the change and carries the order data, so consumers act without calling back.
+- **CQRS-lite** - the projection is a read model kept separate from the write side.
+- **Not event sourcing** - the event log isn't the source of truth here. That's a separate pattern you'd add for full replay/audit.
 
 ## The four services
 
