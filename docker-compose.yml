@@ -15,7 +15,7 @@ services:
 
   order-service:
     build: .
-    command: uvicorn services.order_service:app --host 0.0.0.0 --port 8000
+    command: uvicorn order_service:app --host 0.0.0.0 --port 8000
     ports:
       - "8000:8000"
     environment: *app-env
@@ -23,19 +23,19 @@ services:
 
   payment-service:
     build: .
-    command: python -m services.payment_service
+    command: python payment_service.py
     environment: *app-env
     depends_on: [nats]
 
   inventory-service:
     build: .
-    command: python -m services.inventory_service
+    command: python inventory_service.py
     environment: *app-env
     depends_on: [nats]
 
   projection-service:
     build: .
-    command: uvicorn services.projection_service:app --host 0.0.0.0 --port 8001
+    command: uvicorn projection_service:app --host 0.0.0.0 --port 8001
     ports:
       - "8001:8001"
     environment: *app-env

@@ -1,6 +1,6 @@
-"""Offline self-checks for the projection reducer (no DB, no NATS needed)."""
+"""Offline self-checks for the projection reducer (no bus, no store)."""
 
-from services.projection_logic import apply_event
+from projection_logic import apply_event
 
 
 def test_placed():
@@ -21,7 +21,6 @@ def test_confirmed_once_both_present():
 
 
 def test_arrival_order_does_not_matter():
-    # inventory before payment still confirms
     state = apply_event({}, "inventory.reserved")
     state = apply_event(state, "payments.captured")
     assert state["status"] == "CONFIRMED"
@@ -34,9 +33,7 @@ def test_apply_event_does_not_mutate_input():
 
 
 if __name__ == "__main__":
-    test_placed()
-    test_not_confirmed_with_only_payment()
-    test_confirmed_once_both_present()
-    test_arrival_order_does_not_matter()
-    test_apply_event_does_not_mutate_input()
+    for _name, _fn in list(globals().items()):
+        if _name.startswith("test_"):
+            _fn()
     print("ok")
