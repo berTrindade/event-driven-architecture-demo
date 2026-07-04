@@ -56,9 +56,18 @@ Every event-driven system has these, however simple or complex:
 
 Plus two rules that make it "event-driven": producers and consumers are **decoupled** (they only know the broker, not each other), and it's **asynchronous** (publish and move on, don't wait for a reply).
 
+## Built for an MVP
+
+Beyond the bare pattern, this includes the few things a real MVP shouldn't skip:
+
+- **Structured events** - every event carries a `type`, `id`, `time`, and `correlation_id`, not just a payload.
+- **Correlation id** - threaded through the whole flow, so you can follow one order across every service in the logs (look for `[corr=...]`).
+- **Idempotent payments** - payment-service records each event id it handles (in Postgres), so a redelivered event never double-charges.
+- **Dead-letter queue** - a message the handler can't process goes to a `dead-letter` queue instead of vanishing or blocking the line. Try it: order an item named `POISON`.
+
 ## Going further
 
-This demo stays minimal on purpose. A real system adds things like delivery guarantees, idempotent consumers, retries with a dead-letter queue, event schemas, and tracing - each a topic on its own.
+Still left out on purpose, add when the problem calls for it: formal event schemas and versioning, distributed tracing (OpenTelemetry), orchestration / sagas for multi-step workflows, and high-availability clustering.
 
 ## Tests
 

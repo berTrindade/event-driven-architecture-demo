@@ -1,11 +1,8 @@
 """projection-service - the read model (CQRS-lite), stored in PostgreSQL.
 
-Consumes the three events (one queue bound to all three routing keys) and folds
-each into the order_status table using the pure apply_event() rules, then serves
-that view over HTTP. It only reads events and builds state - it issues no commands.
-
-Postgres is the classic default store for a read model, and it's durable: you
-could rebuild this table by replaying the events (given a durable log upstream).
+Consumes the three events (one queue bound to all three types) and folds each
+into the order_status table using the pure apply_event() rules, then serves that
+view over HTTP. It only reads events and builds state - it issues no commands.
 
 Run: uvicorn projection_service:app --host 0.0.0.0 --port 8001
 """
@@ -24,22 +21,20 @@ logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("projection-service")
 
 DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://demo:demo@localhost:5432/demo")
-TOPICS = ["orders.placed", "payments.captured", "inventory.reserved"]
+EVENT_TYPES = ["orders.placed", "payments.captured", "inventory.reserved"]
 
 pool = None
 
 
-async def on_event(topic, data):
-    order_id = data["order_id"]
-    # Read-modify-write in one transaction with a row lock, so two events for the
-    # same order (payment and inventory) can't clobber each other.
+async def on_event(event):
+    order_id = event.data["order_id"]
     async with pool.acquire() as conn:
         async with conn.transaction():
             row = await conn.fetchrow(
                 "SELECT status, payment, inventory FROM order_status WHERE order_id = $1 FOR UPDATE",
                 order_id,
             )
-            new_state = apply_event(dict(row) if row else {}, topic)
+            new_state = apply_event(dict(row) if row else {}, event.type)
             await conn.execute(
                 """
                 INSERT INTO order_status (order_id, status, payment, inventory, updated_at)
@@ -55,7 +50,7 @@ async def on_event(topic, data):
                 new_state.get("payment"),
                 new_state.get("inventory"),
             )
-    log.info("%s -> order %s is %s", topic, order_id, new_state.get("status"))
+    log.info("%s -> order %s is %s [corr=%s]", event.type, order_id, new_state.get("status"), event.correlation_id)
 
 
 @asynccontextmanager
@@ -63,8 +58,8 @@ async def lifespan(app):
     global pool
     pool = await asyncpg.create_pool(DATABASE_URL, min_size=1, max_size=5)
     await bus.start("projection-service")
-    await bus.consume("projection-service", TOPICS, on_event)
-    log.info("projecting %s", TOPICS)
+    await bus.consume("projection-service", EVENT_TYPES, on_event)
+    log.info("projecting %s", EVENT_TYPES)
     yield
     await bus.stop()
     await pool.close()

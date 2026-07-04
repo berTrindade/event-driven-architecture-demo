@@ -48,8 +48,13 @@ services:
   payment-service:
     build: .
     command: python payment_service.py
-    environment: *app-env
-    depends_on: *app-depends
+    environment:
+      <<: *app-env
+      DATABASE_URL: postgresql://demo:demo@postgres:5432/demo
+    depends_on:
+      <<: *app-depends
+      postgres:
+        condition: service_healthy
 
   inventory-service:
     build: .
